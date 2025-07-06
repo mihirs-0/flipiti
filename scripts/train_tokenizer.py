@@ -1,85 +1,77 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Tokenizer training script for forward and reverse text.
+Train a Byte-Pair-Encoding (BPE) tokenizer on (a slice of) OpenWebText.
+Usage examples
+--------------
+# Forward tokenizer (no reversal)
+python scripts/train_tokenizer.py \
+    --out tokenizers/tokenizer_forward.json \
+    --vocab_size 32000 \
+    --sample_gb 10
 
-Trains BPE tokenizers on both forward and reverse text to enable
-fair comparison between language modeling directions.
+# Reversed tokenizer (character-level flip)
+python scripts/train_tokenizer.py \
+    --out tokenizers/tokenizer_reverse.json \
+    --vocab_size 32000 \
+    --sample_gb 10 \
+    --reverse
 """
+import argparse, itertools, unicodedata, random, os, json, math, tqdm
+from datasets import load_dataset
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers, normalizers
 
-import argparse
-from pathlib import Path
-from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import Whitespace
-from transformers import GPT2TokenizerFast
+def iter_owt(sample_gb: int, reverse: bool):
+    """
+    Stream roughly `sample_gb` of OpenWebText.
+    Uses HF streaming to avoid downloading the full 40 GB.
+    """
+    ds = load_dataset("openwebtext", split="train", streaming=True, trust_remote_code=True)
+    bytes_seen = 0
+    gb_limit = sample_gb * (1024**3)
+    rng = random.Random(42)
 
-
-def train_tokenizer(text_files: list, direction: str, vocab_size: int = 50257) -> Tokenizer:
-    """Train a BPE tokenizer on text files."""
-    print(f"Training {direction} tokenizer with vocab size {vocab_size}...")
-    
-    # Initialize tokenizer
-    tokenizer = Tokenizer(BPE(unk_token="<|unk|>"))
-    tokenizer.pre_tokenizer = Whitespace()
-    
-    # Setup trainer
-    trainer = BpeTrainer(
-        vocab_size=vocab_size,
-        special_tokens=["<|unk|>", "<|pad|>", "<|eos|>", "<|bos|>"]
-    )
-    
-    # Train tokenizer
-    tokenizer.train(text_files, trainer)
-    
-    return tokenizer
-
-
-def save_tokenizer(tokenizer: Tokenizer, output_path: Path, direction: str):
-    """Save tokenizer in HuggingFace format."""
-    print(f"Saving {direction} tokenizer to {output_path}")
-    
-    # Convert to HuggingFace format
-    wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
-    wrapped_tokenizer.pad_token = "<|pad|>"
-    wrapped_tokenizer.eos_token = "<|eos|>"
-    wrapped_tokenizer.bos_token = "<|bos|>"
-    
-    # Save
-    wrapped_tokenizer.save_pretrained(output_path)
-
+    for ex in ds:
+        text = ex["text"]
+        if reverse:
+            text = text[::-1]          # simple character flip
+        # Normalize to NFKC for consistency
+        text = unicodedata.normalize("NFKC", text)
+        bytes_seen += len(text.encode("utf-8"))
+        yield text
+        if bytes_seen >= gb_limit:
+            break
 
 def main():
-    parser = argparse.ArgumentParser(description="Train tokenizer for language modeling")
-    parser.add_argument("--direction", choices=["forward", "reverse"], required=True,
-                       help="Direction of text for tokenizer training")
-    parser.add_argument("--data-dir", default="data/", help="Data directory")
-    parser.add_argument("--output-dir", default="tokenizers/", help="Output directory")
-    parser.add_argument("--vocab-size", type=int, default=50257, help="Vocabulary size")
-    
-    args = parser.parse_args()
-    
-    data_dir = Path(args.data_dir)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(exist_ok=True)
-    
-    # Find training files
-    text_files = list(data_dir.glob(f"*{args.direction}*.txt"))
-    if not text_files:
-        print(f"No {args.direction} text files found in {data_dir}")
-        return
-    
-    print(f"Found {len(text_files)} files for {args.direction} tokenizer training")
-    
-    # Train tokenizer
-    tokenizer = train_tokenizer([str(f) for f in text_files], args.direction, args.vocab_size)
-    
-    # Save tokenizer
-    save_path = output_dir / f"gpt2-{args.direction}"
-    save_tokenizer(tokenizer, save_path, args.direction)
-    
-    print(f"Tokenizer training complete! Saved to {save_path}")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", required=True, help="Path to save tokenizer JSON")
+    ap.add_argument("--vocab_size", type=int, default=32_000)
+    ap.add_argument("--sample_gb", type=int, default=10,
+                    help="How many gigabytes of OWT to stream")
+    ap.add_argument("--reverse", action="store_true",
+                    help="Flip each document's characters")
+    args = ap.parse_args()
 
+    # --- Build tokenizer skeleton ---
+    tokenizer = Tokenizer(models.BPE(unk_token="<UNK>"))
+    tokenizer.normalizer = normalizers.Sequence([normalizers.NFKC()])
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+
+    trainer = trainers.BpeTrainer(
+        vocab_size=args.vocab_size,
+        special_tokens=["<PAD>", "<BOS>", "<EOS>", "<UNK>"]
+    )
+
+    print(f"[INFO] Streaming ≈{args.sample_gb} GB of OpenWebText "
+          f"({'reversed' if args.reverse else 'forward'})…")
+    tokenizer.train_from_iterator(
+        iter_owt(args.sample_gb, args.reverse),
+        trainer=trainer,
+        length=args.vocab_size * 200  # rough iterator length hint
+    )
+
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    tokenizer.save(args.out)
+    print(f"[DONE] Saved tokenizer to {args.out}")
 
 if __name__ == "__main__":
     main() 

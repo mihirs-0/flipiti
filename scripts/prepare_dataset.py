@@ -1,62 +1,47 @@
 #!/usr/bin/env python3
 """
-Dataset preparation script for forward vs. reverse language modeling.
-
-This script downloads and preprocesses text data for training both 
-forward and reverse language models.
+prepare_dataset.py – Stream and save OpenWebText forward and reversed datasets.
 """
 
 import argparse
-import os
+import unicodedata
 from pathlib import Path
 from datasets import load_dataset
 from tqdm import tqdm
 
+def stream_openwebtext(sample_gb: float, reverse: bool = False):
+    ds = load_dataset("openwebtext", split="train", streaming=True)
+    bytes_seen = 0
+    gb_limit = sample_gb * (1024 ** 3)
 
-def download_dataset(dataset_name: str, output_dir: Path):
-    """Download and save raw dataset."""
-    print(f"Downloading {dataset_name}...")
-    # TODO: Implement dataset download
-    pass
+    for ex in ds:
+        text = ex["text"]
+        text = unicodedata.normalize("NFKC", text)
+        if reverse:
+            text = text[::-1]
+        bytes_seen += len(text.encode("utf-8"))
+        yield text.strip().replace("\n", " ")
+        if bytes_seen >= gb_limit:
+            break
 
-
-def create_reverse_text(text: str) -> str:
-    """Reverse the order of characters/tokens in text."""
-    # TODO: Implement text reversal logic
-    return text[::-1]  # Simple character reversal for now
-
-
-def preprocess_and_split(input_file: Path, output_dir: Path):
-    """Process raw text and create forward/reverse splits."""
-    print(f"Processing {input_file}...")
-    
-    # TODO: Implement preprocessing:
-    # 1. Clean and normalize text
-    # 2. Split into train/validation sets
-    # 3. Create reverse versions
-    # 4. Save processed files
-    
-    pass
-
+def save_text(filepath: Path, stream):
+    with filepath.open("w", encoding="utf-8") as f:
+        for line in tqdm(stream, desc=f"[writing {filepath.name}]"):
+            f.write(line + "\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare dataset for language modeling")
-    parser.add_argument("--dataset", default="openwebtext", help="Dataset to use")
-    parser.add_argument("--output-dir", default="data/", help="Output directory")
-    parser.add_argument("--size", default="10M", help="Dataset size (e.g., 10M, 100M)")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", default="data", help="Output folder for .txt files")
+    parser.add_argument("--sample-gb", type=float, default=0.01, help="Total size to stream (GB)")
     args = parser.parse_args()
-    
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(exist_ok=True)
-    
-    print(f"Preparing {args.dataset} dataset...")
-    
-    # TODO: Implement full pipeline
-    download_dataset(args.dataset, output_dir)
-    
-    print("Dataset preparation complete!")
 
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    save_text(out_dir / "train_forward.txt", stream_openwebtext(args.sample_gb, reverse=False))
+    save_text(out_dir / "train_reversed.txt", stream_openwebtext(args.sample_gb, reverse=True))
+
+    print("[done] Saved forward and reversed corpora.")
 
 if __name__ == "__main__":
     main() 
