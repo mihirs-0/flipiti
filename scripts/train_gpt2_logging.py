@@ -148,8 +148,8 @@ def main(argv=None):
     ap.add_argument("--tokenizer", type=Path, required=True)
     ap.add_argument("--bin", type=Path, required=True)
     ap.add_argument("--eval_txt", type=Path, required=True)
-    ap.add_argument("--steps", type=int, default=2000)
-    ap.add_argument("--block_size", type=int, default=128)
+    ap.add_argument("--steps", type=int, default=250000)
+    ap.add_argument("--block_size", type=int, default=512)
     ap.add_argument("--run_name", default="char_flip_run")
     ap.add_argument("--project", default="reverse-gpt2")
     args = ap.parse_args(argv)
@@ -164,13 +164,13 @@ def main(argv=None):
 
     train_ds = PackedDataset(args.bin, args.block_size)
 
-    # tiny GPT‑2 ---------------------------------------------------------------
+    # GPT‑2 Small --------------------------------------------------------------
     cfg = GPT2Config(
         vocab_size=len(tok),
         n_positions=args.block_size,
-        n_embd=128,
-        n_layer=4,
-        n_head=4,
+        n_embd=768,
+        n_layer=12,
+        n_head=12,
         bos_token_id=3,
         eos_token_id=2,
         pad_token_id=0,
@@ -187,6 +187,8 @@ def main(argv=None):
         learning_rate=5e-4,
         max_steps=args.steps,
         logging_steps=20,
+        save_steps=5000,
+        save_total_limit=5,
         report_to=["wandb"],
         disable_tqdm=False,
         fp16=torch.cuda.is_available(),
@@ -195,7 +197,10 @@ def main(argv=None):
 
     # eval texts ---------------------------------------------------------------
     eval_texts = [l.strip() for l in Path(args.eval_txt).read_text().splitlines() if l.strip()][:8]
-    cb = ExtraMetricsCallback(eval_texts, tok, sample_prompt="ehT", block_size=args.block_size, log_every=100)
+    
+    # Dynamic sample prompt based on model type
+    sample_prompt = "ehT" if "reverse" in str(args.tokenizer).lower() else "The"
+    cb = ExtraMetricsCallback(eval_texts, tok, sample_prompt=sample_prompt, block_size=args.block_size, log_every=100)
 
     trainer = Trainer(
         model=model,

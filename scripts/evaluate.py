@@ -14,6 +14,7 @@ from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 from datasets import load_dataset
 import numpy as np
 from tqdm import tqdm
+from typing import List
 
 
 def calculate_perplexity(model, tokenizer, text_data: list, device: str = "cuda"):
@@ -120,10 +121,16 @@ def main():
     tokenizers_dir = Path(args.tokenizers_dir)
     
     # Load test data
-    # TODO: Implement test data loading
-    test_data = ["This is a sample test sentence."]  # Placeholder
-    
+    def load_test_data(test_file: Path) -> List[str]:
+        """Load test data from test file."""
+        with open(test_file, 'r') as f:
+            return [line.strip() for line in f if line.strip()][:100]  # First 100 lines
+        
+    test_data = load_test_data(Path(args.test_data))
+
     results = {}
+
+
     
     # Evaluate forward model
     forward_model_path = models_dir / "gpt2-forward"
